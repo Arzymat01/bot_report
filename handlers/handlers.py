@@ -13,12 +13,16 @@ import matplotlib.pyplot as plt
 from collections import Counter
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
+import pytz
 
-# Init
+# Бишкек убакыт зонасы
+kz_tz = pytz.timezone("Asia/Bishkek")
+
+# Инициализация
 dp = Dispatcher()
 Base.metadata.create_all(bind=engine)
 
-# FSM states
+# Состояния FSM
 class AssignTask(StatesGroup):
     waiting_for_user_id = State()
     waiting_for_task_text = State()
@@ -26,7 +30,7 @@ class AssignTask(StatesGroup):
 class DoneTask(StatesGroup):
     waiting_for_task_id = State()
 
-# Start handler
+# Старт
 @dp.message(Command("start"))
 async def start_handler(message: Message):
     session = SessionLocal()
@@ -34,34 +38,42 @@ async def start_handler(message: Message):
         user = session.query(User).filter(User.user_id == message.from_user.id).first()
         if not user:
             is_admin_flag = True if message.from_user.id == 757804536 else False
-            user = User(user_id=message.from_user.id, username=message.from_user.username, is_admin=is_admin_flag)
+            full_name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
+            user = User(
+                user_id=message.from_user.id,
+                username=message.from_user.username,
+                full_name=full_name,
+                is_admin=is_admin_flag
+            )
             session.add(user)
             session.commit()
         await message.answer("Привет! Я бот для управления задачами.\nВоспользуйтесь командой /menu.")
     finally:
         session.close()
 
-# Menu keyboard
+
+# Меню
 @dp.message(Command("menu"))
 async def show_menu(message: Message):
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="/assign")],
-            [KeyboardButton(text="/done")],
-            [KeyboardButton(text="/mytasks"), KeyboardButton(text="/report")],
-            [KeyboardButton(text="/users")]
+            [KeyboardButton(text="📌 Назначить задание (/assign)")],
+            [KeyboardButton(text="✅ Завершить задание (/done)")],
+            [KeyboardButton(text="🗒 Мои задания (/mytasks)"), KeyboardButton(text="📊 Отчёт (/report)")],
+            [KeyboardButton(text="👥 Пользователи (/users)")]
         ],
         resize_keyboard=True
     )
-    await message.answer("📋 Меню:", reply_markup=keyboard)
+    await message.answer("📋 Главное меню:", reply_markup=keyboard)
 
-# Assign FSM
+# Назначение задания
+@dp.message(F.text == "📌 Назначить задание (/assign)")
 @dp.message(Command("assign"))
 async def assign_start(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
-        await message.answer("Эта команда только для админов.")
+        await message.answer("Эта команда доступна только администраторам.")
         return
-    await message.answer("👤 Кому (user_id) вы хотите назначить задание?")
+    await message.answer("👤 Введите user_id пользователя, которому хотите назначить задание:")
     await state.set_state(AssignTask.waiting_for_user_id)
 
 @dp.message(AssignTask.waiting_for_user_id)
@@ -72,7 +84,7 @@ async def assign_user_id_input(message: Message, state: FSMContext):
         await message.answer("✏️ Введите текст задания:")
         await state.set_state(AssignTask.waiting_for_task_text)
     except ValueError:
-        await message.answer("❌ Введите user_id в виде числа.")
+        await message.answer("❌ Введите корректный user_id (только число).")
 
 @dp.message(AssignTask.waiting_for_task_text)
 async def assign_task_text_input(message: Message, state: FSMContext):
@@ -85,7 +97,7 @@ async def assign_task_text_input(message: Message, state: FSMContext):
     try:
         user = session.query(User).filter(User.user_id == user_id).first()
         if not user:
-            await message.answer("❌ Данный user_id не найден.")
+            await message.answer("❌ Пользователь с таким user_id не найден.")
             return
 
         task = Task(description=task_text, assigned_to_user_id=user_id)
@@ -109,10 +121,11 @@ async def assign_task_text_input(message: Message, state: FSMContext):
         session.close()
     await state.clear()
 
-# Done FSM с добавлением отчета
+# Завершение задания
+@dp.message(F.text == "✅ Завершить задание (/done)")
 @dp.message(Command("done"))
 async def done_start(message: Message, state: FSMContext):
-    await message.answer("🔢 Какой task_id вы выполнили?")
+    await message.answer("🔢 Введите ID выполненного задания (task_id):")
     await state.set_state(DoneTask.waiting_for_task_id)
 
 @dp.message(DoneTask.waiting_for_task_id)
@@ -130,27 +143,31 @@ async def done_get_task_id(message: Message, state: FSMContext):
                 await message.answer("❌ Задание не найдено или не относится к вам.")
                 return
 
+            # Бишкек убактысы
             task.status = 'done'
-            task.done_at = datetime.utcnow()
+            task.done_at = datetime.now(kz_tz)
 
-            # Добавляем отчет в таблицу Report
+            # ✅ full_name генерациясы
+            full_name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
+
             report = Report(
                 task_id=task.task_id,
                 user_id=message.from_user.id,
-                report_text=f"Пользователь {message.from_user.full_name} завершил задание.",
-                created_at=datetime.utcnow()
+                report_text=f"Пользователь {full_name} завершил задание.",
+                created_at=datetime.now(kz_tz)
             )
             session.add(report)
-
             session.commit()
+
             await message.answer(f"✅ Задание {task_id} помечено как выполненное.")
         finally:
             session.close()
         await state.clear()
     except ValueError:
-        await message.answer("❗ Task ID должен быть числом.")
+        await message.answer("❗ Введите корректный task_id (число).")
 
-# My tasks
+# Мои задания
+@dp.message(F.text == "🗒 Мои задания (/mytasks)")
 @dp.message(Command("mytasks"))
 async def mytasks_handler(message: Message):
     session = SessionLocal()
@@ -166,7 +183,8 @@ async def mytasks_handler(message: Message):
     finally:
         session.close()
 
-# Report
+# Отчет
+@dp.message(F.text == "📊 Отчёт (/report)")
 @dp.message(Command("report"))
 async def report_handler(message: Message):
     if not is_admin(message.from_user.id):
@@ -175,46 +193,66 @@ async def report_handler(message: Message):
 
     session = SessionLocal()
     try:
-        tasks_done = session.query(Task).filter(Task.status == 'done').all()
-        dates = [t.done_at.date() for t in tasks_done if t.done_at]
-
-        if not dates:
-            await message.answer("❌ Нет выполненных заданий для отчета.")
+        tasks = session.query(Task).all()
+        if not tasks:
+            await message.answer("❌ Заданий не найдено.")
             return
 
+        done_tasks = [t for t in tasks if t.status == 'done' and t.done_at]
+        dates = [t.done_at.astimezone(kz_tz).date() for t in done_tasks]
         counter = Counter(dates)
         dates_sorted = sorted(counter.keys())
         counts = [counter[d] for d in dates_sorted]
 
-        plt.figure(figsize=(8, 4))
-        plt.bar([d.strftime("%Y-%m-%d") for d in dates_sorted], counts)
-        plt.title("Выполненные задачи по датам")
-        plt.xlabel("Дата")
-        plt.ylabel("Количество")
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig("report.png")
-        plt.close()
+        if counts:
+            plt.figure(figsize=(8, 4))
+            plt.bar([d.strftime("%Y-%m-%d") for d in dates_sorted], counts)
+            plt.title("Выполненные задачи по датам")
+            plt.xlabel("Дата")
+            plt.ylabel("Количество")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.savefig("report.png")
+            plt.close()
+        else:
+            plt.figure(figsize=(6, 3))
+            plt.text(0.5, 0.5, "Нет завершённых заданий", fontsize=14, ha='center')
+            plt.axis('off')
+            plt.savefig("report.png")
+            plt.close()
 
-        reports = session.query(Report).all()
-        if not reports:
-            await message.answer("❌ В базе нет отчётов.")
-            return
-
+        # Excel отчет
         wb = Workbook()
         sheet = wb.active
         sheet.title = "Отчёты"
 
-        headers = ["report_id", "task_id", "user_id", "report_text", "created_at"]
+        headers = [
+            "ID задания", "Имя пользователя", "ID пользователя", "Текст задания",
+            "Статус", "Дата выполнения", "Дата назначения"
+        ]
         sheet.append(headers)
 
-        for r in reports:
+        for task in tasks:
+            done_at = (
+                task.done_at.astimezone(kz_tz).strftime("%Y-%m-%d %H:%M:%S")
+                if task.done_at else ""
+            )
+            created_at = (
+                task.created_at.astimezone(kz_tz).strftime("%Y-%m-%d %H:%M:%S")
+                if task.created_at else ""
+            )
+
+            user = session.query(User).filter(User.user_id == task.assigned_to_user_id).first()
+            username = f"@{user.username}" if user and user.username else user.full_name if user and user.full_name else "Неизвестно"
+
             sheet.append([
-                r.report_id,
-                r.task_id if r.task_id else "",
-                r.user_id if r.user_id else "",
-                r.report_text if r.report_text else "",
-                r.created_at.strftime("%Y-%m-%d %H:%M:%S") if r.created_at else ""
+                task.task_id,
+                task.assigned_to_user_id or "",
+                username,
+                task.description or "",
+                "завершено" if task.status == 'done' else "не завершено",
+                done_at,
+                created_at
             ])
 
         for col in sheet.columns:
@@ -225,14 +263,24 @@ async def report_handler(message: Message):
         excel_path = "reports.xlsx"
         wb.save(excel_path)
 
-        await message.bot.send_photo(message.chat.id, FSInputFile("report.png"), caption="📊 Отчёт по выполненным задачам")
-        await message.bot.send_document(message.chat.id, FSInputFile(excel_path), caption="📁 Excel-файл отчётов")
+        await message.bot.send_photo(
+            message.chat.id,
+            FSInputFile("report.png"),
+            caption="📊 График выполненных заданий"
+        )
+        await message.bot.send_document(
+            message.chat.id,
+            FSInputFile(excel_path),
+            caption="📁 Полный Excel-отчёт по всем заданиям"
+        )
+
     except Exception as e:
         await message.answer(f"❌ Ошибка при создании отчета: {str(e)}")
     finally:
         session.close()
 
-# Users list
+# Пользователи
+@dp.message(F.text == "👥 Пользователи (/users)")
 @dp.message(Command("users"))
 async def users_handler(message: Message):
     if not is_admin(message.from_user.id):
@@ -243,11 +291,11 @@ async def users_handler(message: Message):
     try:
         users = session.query(User).all()
         if not users:
-            await message.answer("Пользователи не найдены.")
+            await message.answer("❌ Пользователи не найдены.")
         else:
-            text = "👥 Пользователи:\n"
+            text = "👥 Список пользователей:\n"
             for u in users:
-                name = f"@{u.username}" if u.username else "(без имени)"
+                name = f"@{u.username}" if u.username else "(без username)"
                 text += f"ID: {u.user_id}, Username: {name}, Админ: {u.is_admin}\n"
             await message.answer(text)
     finally:

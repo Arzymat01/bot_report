@@ -5,18 +5,22 @@ from datetime import datetime
 
 class User(Base):
     __tablename__ = 'users'
+
     user_id = Column(Integer, primary_key=True, index=True)
     username = Column(String, nullable=True)
+    full_name = Column(String, nullable=True)  # ✅ Толук аты үчүн талаа кошулду
     is_admin = Column(Boolean, default=False)
 
     tasks = relationship("Task", back_populates="assigned_user")
+    reports = relationship("Report", back_populates="user")  # ✅ Колдонуучу отчеттор менен байланышта
 
 class Task(Base):
     __tablename__ = 'tasks'
+
     task_id = Column(Integer, primary_key=True, index=True)
     description = Column(Text)
     assigned_to_user_id = Column(Integer, ForeignKey('users.user_id'))
-    status = Column(String, default='assigned')  # assigned, done
+    status = Column(String, default='assigned')  # 'assigned', 'done'
     created_at = Column(DateTime, default=datetime.utcnow)
     done_at = Column(DateTime, nullable=True)
     document_file_id = Column(String, nullable=True)
@@ -26,10 +30,13 @@ class Task(Base):
 
 class Report(Base):
     __tablename__ = 'reports'
+
     report_id = Column(Integer, primary_key=True, index=True)
     task_id = Column(Integer, ForeignKey('tasks.task_id'))
     user_id = Column(Integer, ForeignKey('users.user_id'))
     report_text = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
+    full_name = Column(String)  # Отчет учурунда сакталган аты
 
     task = relationship("Task", back_populates="reports")
+    user = relationship("User", back_populates="reports")  # ✅ Колдонуучу менен байланыш түзүлдү
