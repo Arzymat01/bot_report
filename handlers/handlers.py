@@ -51,7 +51,6 @@ async def start_handler(message: Message):
     finally:
         session.close()
 
-
 # Меню
 @dp.message(Command("menu"))
 async def show_menu(message: Message):
@@ -100,7 +99,11 @@ async def assign_task_text_input(message: Message, state: FSMContext):
             await message.answer("❌ Пользователь с таким user_id не найден.")
             return
 
-        task = Task(description=task_text, assigned_to_user_id=user_id)
+        task = Task(
+            description=task_text,
+            assigned_to_user_id=user_id,
+            created_at=datetime.now(kz_tz)  # Бишкек убактысы
+        )
         if file_id:
             task.document_file_id = file_id
 
@@ -143,18 +146,15 @@ async def done_get_task_id(message: Message, state: FSMContext):
                 await message.answer("❌ Задание не найдено или не относится к вам.")
                 return
 
-            # Бишкек убактысы
             task.status = 'done'
-            task.done_at = datetime.now(kz_tz)
+            task.done_at = datetime.now(kz_tz)  # Бишкек убактысы
 
-            # ✅ full_name генерациясы
             full_name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
-
             report = Report(
                 task_id=task.task_id,
                 user_id=message.from_user.id,
                 report_text=f"Пользователь {full_name} завершил задание.",
-                created_at=datetime.now(kz_tz)
+                created_at=datetime.now(kz_tz)  # Бишкек убактысы
             )
             session.add(report)
             session.commit()
@@ -178,7 +178,8 @@ async def mytasks_handler(message: Message):
         else:
             text = "📋 Ваши задания:\n"
             for t in tasks:
-                text += f"ID: {t.task_id}, Статус: {t.status}, Текст: {t.description}\n"
+                created_at = t.created_at.astimezone(kz_tz).strftime("%Y-%m-%d %H:%M:%S") if t.created_at else "Не указано"
+                text += f"ID: {t.task_id}, Статус: {t.status}, Текст: {t.description}, Назначено: {created_at}\n"
             await message.answer(text)
     finally:
         session.close()
@@ -227,7 +228,7 @@ async def report_handler(message: Message):
         sheet.title = "Отчёты"
 
         headers = [
-            "ID задания", "Имя пользователя", "ID пользователя", "Текст задания",
+            "ID задания", "ID пользователя", "Имя пользователя", "Текст задания",
             "Статус", "Дата выполнения", "Дата назначения"
         ]
         sheet.append(headers)
